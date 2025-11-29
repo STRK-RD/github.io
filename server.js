@@ -7,6 +7,42 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 app.use(express.static(path.join(__dirname)));
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function sendDiscordMessage({ botToken, channelId, message }) {
+  while (true) {
+    const response = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bot ${botToken}`
+      },
+      body: JSON.stringify({ content: message })
+    });
+
+    if (response.status === 429) {
+      const retryAfterHeader = parseFloat(response.headers.get('retry-after'));
+      let retryMs = Number.isFinite(retryAfterHeader) ? retryAfterHeader * 1000 : 1000;
+
+      const body = await response.json().catch(() => ({}));
+      if (body && Number.isFinite(body.retry_after)) {
+        retryMs = body.retry_after * 1000;
+      }
+
+      await sleep(retryMs);
+      continue;
+    }
+
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}));
+      const detail = errorBody.message || `Discord error (${response.status})`;
+      throw new Error(detail);
+    }
+
+    return;
+  }
+}
+
 app.post('/send-message', async (req, res) => {
   try {
     const { botToken, channelId, message, repeatCount = 1 } = req.body;
@@ -16,20 +52,7 @@ app.post('/send-message', async (req, res) => {
     }
 
     for (let i = 0; i < repeatCount; i++) {
-      const response = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bot ${botToken}`
-        },
-        body: JSON.stringify({ content: message })
-      });
-
-      if (!response.ok) {
-        const errorBody = await response.json().catch(() => ({}));
-        const detail = errorBody.message || `Discord error (${response.status})`;
-        return res.status(response.status).json({ message: detail });
-      }
+      await sendDiscordMessage({ botToken, channelId, message });
     }
 
     res.json({ message: `${repeatCount} message(s) sent successfully.` });
